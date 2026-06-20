@@ -1,1 +1,1 @@
-Are you _ay
+For someone who is lazy
