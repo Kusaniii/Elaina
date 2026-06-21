@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Plus, Trash2, Pencil, Check, X, Search, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, ImagePlus, Loader2, User, Clock, BookOpen } from "lucide-react";
 import { useOcrTime } from "./useOcrTime";
+import { useGlobalOcr, type ParsedRow } from "./useGlobalOcr";
 import ImageCropperModal from "./ImageCropperModal";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -183,10 +184,12 @@ export default function App() {
   const [targetPersonId, setTargetPersonId] = useState<number | null>(null);
 
   const { processImage, isOcrLoading } = useOcrTime();
+  const { processGlobalImage, processCropImage, isGlobalLoading } = useGlobalOcr();
 
   const newPersonRef = useRef<HTMLInputElement>(null);
   const newTopicRef = useRef<HTMLTableRowElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const globalFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { if (addingPerson) newPersonRef.current?.focus(); }, [addingPerson]);
   useEffect(() => { if (addingTopic !== null) newTopicRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [addingTopic]);
@@ -277,6 +280,69 @@ export default function App() {
     setNextTopicId(currentTopicIdPointer);
   }
 
+  function addParsedRows(rows: ParsedRow[]): number {
+    if (rows.length === 0) return 0;
+
+    let addedCount = 0;
+    setPersons((prev) => {
+      const updated = prev.map((person) => ({ ...person, topics: [...person.topics] }));
+      let nextPerson = nextPersonId;
+      let nextTopic = nextTopicId;
+
+      rows.forEach(({ name, rawTimes }) => {
+        const normalizedName = name.trim();
+        if (!normalizedName || rawTimes.length === 0) return;
+
+        const existingIndex = updated.findIndex((person) => person.name.toLowerCase() === normalizedName.toLowerCase());
+        const newTopics = rawTimes.map((time) => ({
+          id: nextTopic++,
+          topic: "",
+          time: hhmmssToSecs(time),
+          status: "",
+        }));
+
+        addedCount += newTopics.length;
+
+        if (existingIndex === -1) {
+          updated.push({
+            id: nextPerson,
+            name: normalizedName,
+            topics: newTopics,
+            collapsed: false,
+          });
+          nextPerson += 1;
+          return;
+        }
+
+        const person = updated[existingIndex];
+        const placeholderRow = person.topics.length === 1 && person.topics[0].topic === "" && (person.topics[0].time === "" || person.topics[0].time === 0);
+        if (placeholderRow) {
+          person.topics[0] = newTopics[0];
+          if (newTopics.length > 1) {
+            person.topics.push(...newTopics.slice(1));
+          }
+        } else {
+          person.topics.push(...newTopics);
+        }
+      });
+
+      if (nextPerson !== nextPersonId) setNextPersonId(nextPerson);
+      if (nextTopic !== nextTopicId) setNextTopicId(nextTopic);
+      return updated;
+    });
+
+    return addedCount;
+  }
+
+  async function handleGlobalImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+
+    setTargetPersonId(null);
+    setCropImageSrc(URL.createObjectURL(file));
+  }
+
   async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file || activeUploadPersonId === null) return;
@@ -301,9 +367,32 @@ export default function App() {
   }
 
   async function handleCropComplete(croppedFile: File) {
-    if (targetPersonId === null) return;
     if (cropImageSrc) URL.revokeObjectURL(cropImageSrc);
     setCropImageSrc(null);
+
+    if (targetPersonId === null) {
+      const fileToDataUrl = (file: File) => new Promise<string>((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result as string);
+        r.onerror = () => rej(new Error("File read error"));
+        r.readAsDataURL(file);
+      });
+
+      try {
+        const dataUrl = await fileToDataUrl(croppedFile);
+        const parsedRows = await processCropImage(dataUrl);
+        if (parsedRows.length > 0) {
+          const addedCount = addParsedRows(parsedRows);
+          alert(`Đã tự động nhập ${addedCount} mốc thời gian tương ứng với tên.`);
+        } else {
+          alert("Không tìm thấy dữ liệu phù hợp trong ảnh đã cắt.");
+        }
+      } catch (err) {
+        console.error(err);
+      }
+      return;
+    }
+
     const secondsArray = await processImage(croppedFile);
     insertSecondsToPerson(targetPersonId, secondsArray);
     setTargetPersonId(null);
@@ -354,6 +443,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
+      <input ref={globalFileInputRef} type="file" accept="image/*" onChange={handleGlobalImageUpload} className="hidden" disabled={isOcrLoading} />
       <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} className="hidden" disabled={isOcrLoading} />
 
       {cropImageSrc && (
@@ -364,7 +454,7 @@ export default function App() {
         />
       )}
 
-      {isOcrLoading && (
+      {(isOcrLoading || isGlobalLoading) && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-card p-5 rounded-xl border border-border shadow-lg flex items-center gap-3 max-w-sm w-full">
             <Loader2 className="animate-spin text-primary shrink-0" size={20} />
@@ -386,12 +476,23 @@ export default function App() {
               className="w-full pl-9 pr-3 py-2 text-sm bg-muted rounded-lg border border-border focus:outline-none focus:ring-2 focus:ring-primary/20 text-foreground"
             />
           </div>
-          <button
-            onClick={() => { setAddingPerson(true); setAddingTopic(null); }}
-            className="flex items-center gap-1 px-3 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:opacity-90 shrink-0 font-medium"
-          >
-            <Plus size={14} /> <span className="hidden sm:inline">Thêm học viên</span><span className="sm:hidden">Thêm</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => globalFileInputRef.current?.click()}
+              disabled={isOcrLoading || isGlobalLoading}
+              className="flex items-center gap-1 px-3 py-2 text-sm bg-secondary text-secondary-foreground rounded-lg hover:bg-secondary/90 shrink-0 font-medium transition-colors disabled:opacity-50"
+            >
+              <ImagePlus size={14} />
+              <span className="hidden sm:inline">Nhập từ ảnh</span>
+              <span className="sm:hidden">Nhập ảnh</span>
+            </button>
+            <button
+              onClick={() => { setAddingPerson(true); setAddingTopic(null); }}
+              className="flex items-center gap-1 px-3 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:opacity-90 shrink-0 font-medium"
+            >
+              <Plus size={14} /> <span className="hidden sm:inline">Thêm học viên</span><span className="sm:hidden">Thêm</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -493,7 +594,7 @@ export default function App() {
                                 {topic.topic || <span className="text-muted-foreground italic text-[11px]">Chưa đặt chủ đề</span>}
                               </div>
                               <div className="flex items-center gap-2 shrink-0">
-                                <span className="font-mono bg-muted px-2 py-0.5 rounded text-foreground font-semibold">{topic.time === "" || topic.time === 0 ? "00:00:00" : secsToHhmmss(topic.time)}</span>
+                                <span className="font-mono bg-muted px-2 py-0.5 rounded text-foreground font-semibold max-w-[96px] truncate block whitespace-nowrap overflow-hidden">{topic.time === "" || topic.time === 0 ? "00:00:00" : secsToHhmmss(topic.time)}</span>
                                 <div className="flex gap-0.5 border-l border-border pl-1.5">
                                   <button onClick={() => startEditTopic(person.id, topic)} className="p-1 text-muted-foreground hover:text-primary"><Pencil size={13}/></button>
                                   <button onClick={() => deleteTopic(person.id, topic.id)} className="p-1 text-muted-foreground hover:text-destructive"><Trash2 size={13}/></button>
@@ -643,7 +744,7 @@ export default function App() {
                           ) : (
                             <>
                               <td className="px-3 py-2.5">{topic.topic || <span className="text-muted-foreground italic text-xs">Chưa có chủ đề</span>}</td>
-                              <td className="px-3 py-2.5 font-mono text-foreground">{topic.time === "" || topic.time === 0 ? "00:00:00" : secsToHhmmss(topic.time)}</td>
+                              <td className="px-3 py-2.5 font-mono text-foreground max-w-[120px] truncate whitespace-nowrap overflow-hidden">{topic.time === "" || topic.time === 0 ? "00:00:00" : secsToHhmmss(topic.time)}</td>
                             </>
                           )}
 
