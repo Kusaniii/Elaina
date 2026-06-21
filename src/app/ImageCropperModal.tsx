@@ -32,19 +32,27 @@ export default function ImageCropperModal({ imageSrc, onClose, onCropComplete }:
       const scaleX = image.naturalWidth / image.width;
       const scaleY = image.naturalHeight / image.height;
       
-      canvas.width = completedCrop.width;
-      canvas.height = completedCrop.height;
+      // SỬA LỖI: Kích thước canvas đầu ra phải nhân với scale để lấy kích thước thật của ảnh gốc
+      const pixelWidth = Math.floor(completedCrop.width * scaleX);
+      const pixelHeight = Math.floor(completedCrop.height * scaleY);
+
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
+
+      // Đảm bảo chất lượng ảnh vẽ ra canvas là cao nhất cho OCR
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
 
       ctx.drawImage(
         image,
-        completedCrop.x * scaleX,
-        completedCrop.y * scaleY,
-        completedCrop.width * scaleX,
-        completedCrop.height * scaleY,
-        0,
-        0,
-        completedCrop.width,
-        completedCrop.height
+        Math.floor(completedCrop.x * scaleX), // Tọa độ X trên ảnh gốc
+        Math.floor(completedCrop.y * scaleY), // Tọa độ Y trên ảnh gốc
+        pixelWidth,                           // Chiều rộng vùng cần cắt
+        pixelHeight,                          // Chiều cao vùng cần cắt
+        0,                                    // Tọa độ X vẽ lên canvas
+        0,                                    // Tọa độ Y vẽ lên canvas
+        pixelWidth,                           // Kích thước chiều rộng xuất ra
+        pixelHeight                           // Kích thước chiều cao xuất ra
       );
     } 
     // TRƯỜNG HỢP 2: Không thao tác (vùng crop trống) -> Sử dụng toàn bộ hình ảnh gốc ban đầu
